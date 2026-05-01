@@ -1,0 +1,382 @@
+import re
+import threading
+import tkinter as tk
+from datetime import datetime
+from pathlib import Path
+from tkinter import messagebox, ttk
+
+import openpyxl
+
+DATA_ROOT = Path(__file__).parent.resolve()
+YEARS_DIR = DATA_ROOT / "years"
+TOLERANCE = 0.0005
+FILENAME_RE = re.compile(r"(?i)pans?\s*(\d{1,2})-(\d{4})")
+
+
+def parse_filename(name):
+    m = FILENAME_RE.search(name)
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2))
+
+
+def label_kind(cell):
+    if cell is None:
+        return None
+    s = str(cell).strip().lower()
+    if not s:
+        return None
+    if "density" in s:
+        return "density"
+    if s.startswith("mg"):
+        return "mg"
+    if s.startswith("ca"):
+        return "ca"
+    if s.startswith("na"):
+        return "na"
+    if s.startswith("k"):
+        if "stpb" in s:
+            return None
+        if "a.a" in s or "aa" in s:
+            return "k"
+    return None
+
+
+def to_float(v):
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    return None
+
+
+def normalize_name(s):
+    if s is None:
+        return ""
+    return re.sub(r"\s+", "", str(s)).upper()
+
+
+def name_match(query, target):
+    q = normalize_name(query)
+    t = normalize_name(target)
+    if not q or not t:
+        return False
+    if q == t:
+        return True
+    tokens = [seg.strip() for seg in t.split("/") if seg.strip()]
+    return q in tokens
+
+
+def extract_records(filepath):
+    parsed = parse_filename(filepath.name)
+    if not parsed:
+        return []
+    month_hint, year_hint = parsed
+    records = []
+    try:
+        wb = openpyxl.load_workbook(filepath, data_only=True, read_only=True)
+    except Exception:
+        return []
+    try:
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            day_digits = re.sub(r"\D", "", sheet_name)
+            if not day_digits:
+                continue
+            day_hint = int(day_digits)
+            if not 1 <= day_hint <= 31:
+                continue
+            try:
+                row_data = {}
+                for i, row in enumerate(
+                    ws.iter_rows(min_row=1, max_row=20, values_only=True), 1
+                ):
+                    row_data[i] = row
+            except Exception:
+                continue
+
+            labels = {}
+            for r, row in row_data.items():
+                if not row:
+                    continue
+                kind = label_kind(row[0])
+                if kind and kind not in labels:
+                    labels[kind] = r
+            if "density" not in labels:
+                continue
+            density_row_idx = labels["density"]
+
+            header_row_idx = None
+            for r in range(max(1, density_row_idx - 6), density_row_idx):
+                row = row_data.get(r) or ()
+                text_count = sum(
+                    1 for v in row[1:] if isinstance(v, str) and v.strip()
+                )
+                if text_count >= 4:
+                    header_row_idx = r
+            if header_row_idx is None:
+                continue
+
+            headers = row_data[header_row_idx]
+            density_vals = row_data[density_row_idx]
+            mg_vals = row_data.get(labels.get("mg", 0)) or ()
+            ca_vals = row_data.get(labels.get("ca", 0)) or ()
+            k_vals = row_data.get(labels.get("k", 0)) or ()
+            na_vals = row_data.get(labels.get("na", 0)) or ()
+
+            sample_date = None
+            for r, row in row_data.items():
+                if not row:
+                    continue
+                if isinstance(row[0], str) and "sampling" in row[0].lower():
+                    for v in row[1:6]:
+                        if isinstance(v, datetime):
+                            sample_date = v.date()
+                            break
+                    break
+            if sample_date is None:
+                try:
+                    sample_date = datetime(year_hint, month_hint, day_hint).date()
+                except ValueError:
+                    continue
+
+            def cell(arr, idx):
+                if idx < len(arr):
+                    return arr[idx]
+                return None
+
+            for ci in range(1, len(headers)):
+                name = headers[ci]
+                if not isinstance(name, str) or not name.strip():
+                    continue
+                density = to_float(cell(density_vals, ci))
+                if density is None:
+                    continue
+                records.append(
+                    {
+                        "file": filepath.name,
+                        "year": year_hint,
+                        "month": month_hint,
+                        "day": day_hint,
+                        "date": sample_date,
+                        "location": name.strip(),
+                        "density": density,
+                        "mg": to_float(cell(mg_vals, ci)),
+                        "ca": to_float(cell(ca_vals, ci)),
+                        "k": to_float(cell(k_vals, ci)),
+                        "na": to_float(cell(na_vals, ci)),
+                    }
+                )
+    finally:
+        wb.close()
+    return records
+
+
+def find_data_files():
+    if not YEARS_DIR.is_dir():
+        return []
+    files = []
+    for sub in YEARS_DIR.iterdir():
+        if not sub.is_dir():
+            continue
+        for f in sub.iterdir():
+            if f.suffix.lower() == ".xlsx" and FILENAME_RE.search(f.name):
+                files.append(f)
+    return sorted(files)
+
+
+def load_all_records(progress_cb=None):
+    files = find_data_files()
+    all_recs = []
+    for i, f in enumerate(files):
+        if progress_cb:
+            progress_cb(i + 1, len(files), f.name)
+        all_recs.extend(extract_records(f))
+    return all_recs
+
+
+class App(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Brine Density Lookup")
+        self.geometry("1150x620")
+        self.records = []
+        self._build_ui()
+        self.after(50, self.load_data)
+
+    def _build_ui(self):
+        top = ttk.Frame(self, padding=10)
+        top.pack(fill="x")
+
+        ttk.Label(top, text="Material name:").grid(row=0, column=0, sticky="w", padx=4)
+        self.name_var = tk.StringVar()
+        self.name_entry = ttk.Entry(top, textvariable=self.name_var, width=18)
+        self.name_entry.grid(row=0, column=1, padx=4)
+
+        ttk.Label(top, text="Density:").grid(row=0, column=2, sticky="w", padx=(12, 4))
+        self.density_var = tk.StringVar()
+        self.density_entry = ttk.Entry(top, textvariable=self.density_var, width=12)
+        self.density_entry.grid(row=0, column=3, padx=4)
+        ttk.Label(top, text=f"(±{TOLERANCE})").grid(row=0, column=4, sticky="w")
+
+        self.search_btn = ttk.Button(top, text="Search", command=self.search)
+        self.search_btn.grid(row=0, column=5, padx=8)
+        self.reload_btn = ttk.Button(top, text="Reload data", command=self.load_data)
+        self.reload_btn.grid(row=0, column=6, padx=4)
+        self.bind("<Return>", lambda e: self.search())
+
+        self.status_var = tk.StringVar(value="Loading data...")
+        ttk.Label(self, textvariable=self.status_var, anchor="w").pack(
+            fill="x", padx=10
+        )
+
+        body = ttk.Frame(self)
+        body.pack(fill="both", expand=True, padx=10, pady=10)
+
+        cols = (
+            "year", "month", "day", "location", "density",
+            "mg", "ca", "k", "na", "file",
+        )
+        headings = {
+            "year": "Year", "month": "Month", "day": "Day",
+            "location": "Material", "density": "Density",
+            "mg": "Mg+2", "ca": "Ca+2", "k": "K+ A.A.", "na": "Na+ A.A.",
+            "file": "Source File",
+        }
+        widths = {
+            "year": 60, "month": 60, "day": 50, "location": 110, "density": 80,
+            "mg": 90, "ca": 90, "k": 90, "na": 90, "file": 220,
+        }
+        self.tree = ttk.Treeview(body, columns=cols, show="headings", height=22)
+        for c in cols:
+            self.tree.heading(c, text=headings[c])
+            self.tree.column(
+                c, width=widths[c], anchor="center" if c != "file" else "w"
+            )
+        self.tree.tag_configure("group", background="#e8eef7", font=("Segoe UI", 9, "bold"))
+        sb = ttk.Scrollbar(body, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sb.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="left", fill="y")
+
+    def load_data(self):
+        self.search_btn.config(state="disabled")
+        self.reload_btn.config(state="disabled")
+
+        def progress(i, total, name):
+            self.after(0, lambda: self.status_var.set(f"Loading {i}/{total}: {name}"))
+
+        def worker():
+            try:
+                recs = load_all_records(progress)
+            except Exception as e:
+                self.after(
+                    0,
+                    lambda e=e: messagebox.showerror("Load failed", str(e)),
+                )
+                recs = []
+            self.after(0, self._on_loaded, recs)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_loaded(self, recs):
+        self.records = recs
+        self.search_btn.config(state="normal")
+        self.reload_btn.config(state="normal")
+        self.name_entry.focus_set()
+        if not YEARS_DIR.is_dir():
+            self.status_var.set(
+                f"No 'years' folder found at {YEARS_DIR}. "
+                "Create it and place year subfolders (e.g. 2027) inside, "
+                "each containing 'Pan MM-YYYY.xlsx' files."
+            )
+            return
+        if not recs:
+            self.status_var.set(
+                f"'years' folder is empty or contains no recognizable files. "
+                f"Add a year subfolder under {YEARS_DIR} with 'Pan MM-YYYY.xlsx' files, "
+                "then click Reload data."
+            )
+            return
+        years = sorted({r["year"] for r in recs})
+        years_str = ", ".join(str(y) for y in years)
+        self.status_var.set(
+            f"Loaded {len(recs)} records from years: {years_str}. "
+            f"Enter a material name and density, then press Search (or Enter)."
+        )
+
+    def search(self):
+        name = self.name_var.get().strip()
+        d_str = self.density_var.get().strip()
+        if not name:
+            messagebox.showwarning("Missing input", "Enter a material name.")
+            return
+        try:
+            density = float(d_str)
+        except ValueError:
+            messagebox.showwarning(
+                "Invalid density", f"'{d_str}' is not a number."
+            )
+            return
+
+        for iid in self.tree.get_children():
+            self.tree.delete(iid)
+
+        results = []
+        for r in self.records:
+            if not name_match(name, r["location"]):
+                continue
+            if abs(r["density"] - density) > TOLERANCE:
+                continue
+            results.append(r)
+
+        if not results:
+            self.status_var.set(
+                f"No matches for '{name}' near density {density:.4f} (±{TOLERANCE})."
+            )
+            return
+
+        results.sort(
+            key=lambda r: (r["year"], r["month"], r["day"], r["location"])
+        )
+        per_year = {}
+        for r in results:
+            per_year.setdefault(r["year"], []).append(r)
+
+        def fmt(v):
+            return f"{v:.4f}" if isinstance(v, (int, float)) else ""
+
+        for year in sorted(per_year):
+            recs = per_year[year]
+            self.tree.insert(
+                "",
+                "end",
+                values=(
+                    f"— {year} —",
+                    f"{len(recs)} match(es)",
+                    "", "", "", "", "", "", "", "",
+                ),
+                tags=("group",),
+            )
+            for r in recs:
+                self.tree.insert(
+                    "",
+                    "end",
+                    values=(
+                        r["year"], r["month"], r["day"], r["location"],
+                        fmt(r["density"]), fmt(r["mg"]), fmt(r["ca"]),
+                        fmt(r["k"]), fmt(r["na"]), r["file"],
+                    ),
+                )
+
+        years_summary = ", ".join(
+            f"{y}: {len(recs)}" for y, recs in sorted(per_year.items())
+        )
+        self.status_var.set(
+            f"Found {len(results)} match(es) for '{name}' at "
+            f"{density:.4f} ±{TOLERANCE} — {years_summary}"
+        )
+
+
+if __name__ == "__main__":
+    App().mainloop()
