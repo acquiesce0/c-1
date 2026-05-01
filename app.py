@@ -89,7 +89,7 @@ def extract_records(filepath):
             try:
                 row_data = {}
                 for i, row in enumerate(
-                    ws.iter_rows(min_row=1, max_row=20, values_only=True), 1
+                    ws.iter_rows(min_row=1, max_row=30, values_only=True), 1
                 ):
                     row_data[i] = row
             except Exception:
@@ -167,6 +167,59 @@ def extract_records(filepath):
                         "na": to_float(cell(na_vals, ci)),
                     }
                 )
+
+            lower_hdr = None
+            for r, row in row_data.items():
+                if not row:
+                    continue
+                for c, v in enumerate(row):
+                    if isinstance(v, str) and "density @ 45" in v.lower():
+                        lower_hdr = (r, c)
+                        break
+                if lower_hdr:
+                    break
+            if lower_hdr:
+                hr, hc = lower_hdr
+                hdr_row = row_data.get(hr) or ()
+                mg_at_plus2 = (
+                    hc + 2 < len(hdr_row)
+                    and isinstance(hdr_row[hc + 2], str)
+                    and hdr_row[hc + 2].strip().lower().startswith("mg")
+                )
+                if mg_at_plus2:
+                    for dr in range(hr + 1, hr + 9):
+                        row = row_data.get(dr) or ()
+                        if hc >= len(row):
+                            continue
+                        label = row[hc]
+                        if label is None:
+                            continue
+                        if isinstance(label, str):
+                            name = label.strip()
+                            if not name:
+                                continue
+                        else:
+                            name = str(label).strip()
+                            if not name:
+                                continue
+                        density = to_float(cell(row, hc + 1))
+                        if density is None:
+                            continue
+                        records.append(
+                            {
+                                "file": filepath.name,
+                                "year": year_hint,
+                                "month": month_hint,
+                                "day": day_hint,
+                                "date": sample_date,
+                                "location": name,
+                                "density": density,
+                                "mg": to_float(cell(row, hc + 2)),
+                                "ca": to_float(cell(row, hc + 3)),
+                                "k": to_float(cell(row, hc + 4)),
+                                "na": to_float(cell(row, hc + 5)),
+                            }
+                        )
     finally:
         wb.close()
     return records
