@@ -3,7 +3,7 @@ import threading
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 import openpyxl
 
@@ -254,6 +254,8 @@ class App(tk.Tk):
         self.title("Brine Density Lookup")
         self.geometry("1150x620")
         self.records = []
+        self.last_results = []
+        self.last_query = None
         self._build_ui()
         self.after(50, self.load_data)
 
@@ -276,6 +278,10 @@ class App(tk.Tk):
         self.search_btn.grid(row=0, column=5, padx=8)
         self.reload_btn = ttk.Button(top, text="Reload data", command=self.load_data)
         self.reload_btn.grid(row=0, column=6, padx=4)
+        self.export_btn = ttk.Button(
+            top, text="Export to Excel", command=self.export_results, state="disabled"
+        )
+        self.export_btn.grid(row=0, column=7, padx=4)
         self.bind("<Return>", lambda e: self.search())
 
         self.status_var = tk.StringVar(value="Loading data...")
@@ -383,6 +389,10 @@ class App(tk.Tk):
                 continue
             results.append(r)
 
+        self.last_results = results
+        self.last_query = (name, density)
+        self.export_btn.config(state="normal" if results else "disabled")
+
         if not results:
             self.status_var.set(
                 f"No matches for '{name}' near density {density:.4f} (±{TOLERANCE})."
@@ -429,6 +439,62 @@ class App(tk.Tk):
             f"Found {len(results)} match(es) for '{name}' at "
             f"{density:.4f} ±{TOLERANCE} — {years_summary}"
         )
+
+    def export_results(self):
+        if not self.last_results:
+            messagebox.showinfo("Nothing to export", "Run a search first.")
+            return
+
+        name, density = self.last_query
+        safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", name).strip("_") or "results"
+        default_filename = f"brine_{safe_name}_{density:.4f}.xlsx"
+
+        path = filedialog.asksaveasfilename(
+            title="Export results",
+            defaultextension=".xlsx",
+            filetypes=[("Excel workbook", "*.xlsx")],
+            initialfile=default_filename,
+        )
+        if not path:
+            return
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Results"
+        headers = [
+            "Year", "Month", "Day", "Date", "Material", "Density",
+            "Mg+2", "Ca+2", "K+ A.A.", "Na+ A.A.", "Source File",
+        ]
+        ws.append(headers)
+        for cell in ws[1]:
+            cell.font = openpyxl.styles.Font(bold=True)
+
+        results = sorted(
+            self.last_results,
+            key=lambda r: (r["year"], r["month"], r["day"], r["location"]),
+        )
+        for r in results:
+            ws.append([
+                r["year"], r["month"], r["day"],
+                r["date"].isoformat() if r.get("date") else "",
+                r["location"], r["density"],
+                r["mg"], r["ca"], r["k"], r["na"], r["file"],
+            ])
+
+        widths = [6, 7, 5, 12, 16, 10, 10, 10, 10, 10, 30]
+        for i, w in enumerate(widths, 1):
+            ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
+        ws.freeze_panes = "A2"
+
+        try:
+            wb.save(path)
+        except Exception as e:
+            messagebox.showerror("Export failed", str(e))
+            return
+        finally:
+            wb.close()
+
+        self.status_var.set(f"Exported {len(results)} record(s) to {path}")
 
 
 if __name__ == "__main__":
