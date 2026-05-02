@@ -1,15 +1,69 @@
 @echo off
 cd /d "%~dp0"
+
+REM --- Silent dependency checks ---
+where python >nul 2>&1
+if errorlevel 1 goto no_python
+
+python -c "import sys; sys.exit(0 if sys.version_info >= (3,8) else 1)" >nul 2>&1
+if errorlevel 1 goto bad_python
+
+python -c "import openpyxl" >nul 2>&1
+if errorlevel 1 goto no_openpyxl
+
+python -c "import tkinter" >nul 2>&1
+if errorlevel 1 goto no_tk
+
+REM --- All good, launch the app ---
 python app.py
 if errorlevel 1 (
   echo.
   echo ============================================================
-  echo The app did not start. Most common reasons:
-  echo   1. Python is not installed, or "Add to PATH" was not ticked
-  echo      during install. Reinstall from https://www.python.org/downloads/
-  echo      and TICK the box that says "Add python.exe to PATH".
-  echo   2. The openpyxl library is not installed. Open Command Prompt
-  echo      and run:   pip install openpyxl
+  echo The app exited with an error. See the message above.
   echo ============================================================
   pause
 )
+goto :eof
+
+:no_python
+echo ============================================================
+echo Python was not found on PATH.
+echo Install it from https://www.python.org/downloads/
+echo and TICK the box "Add python.exe to PATH" during setup.
+echo ============================================================
+pause
+goto :eof
+
+:bad_python
+echo ============================================================
+echo Your Python version is too old. Python 3.8 or newer is required.
+echo Install the latest from https://www.python.org/downloads/
+echo ============================================================
+pause
+goto :eof
+
+:no_openpyxl
+echo ============================================================
+echo The "openpyxl" library is not installed.
+echo Installing it now...
+echo ============================================================
+python -m pip install --user openpyxl
+if errorlevel 1 (
+  echo.
+  echo Automatic install failed. Open Command Prompt and run:
+  echo     pip install openpyxl
+  pause
+  goto :eof
+)
+python app.py
+if errorlevel 1 pause
+goto :eof
+
+:no_tk
+echo ============================================================
+echo Python's "tkinter" module is missing from this install.
+echo Reinstall Python from https://www.python.org/downloads/
+echo and make sure "tcl/tk and IDLE" is checked during setup.
+echo ============================================================
+pause
+goto :eof
