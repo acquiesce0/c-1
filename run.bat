@@ -14,7 +14,19 @@ if errorlevel 1 goto no_openpyxl
 python -c "import tkinter" >nul 2>&1
 if errorlevel 1 goto no_tk
 
-REM --- All good, launch the app ---
+REM --- pywin32 is optional (used to open Excel at the right sheet on double-click).
+REM     If missing, install silently in the background; the app still works without it.
+python -c "import win32com.client" >nul 2>&1
+if errorlevel 1 start "" /b python -m pip install --user pywin32 >nul 2>&1
+
+REM --- All good, launch the app windowed
+REM     If it crashes, re-run with python so the traceback is visible.
+where pythonw >nul 2>&1
+if errorlevel 1 goto run_console
+start "" pythonw app.py
+goto :eof
+
+:run_console
 python app.py
 if errorlevel 1 (
   echo.

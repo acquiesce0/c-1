@@ -1,4 +1,7 @@
+import os
 import re
+import subprocess
+import sys
 import threading
 import tkinter as tk
 from datetime import datetime
@@ -155,6 +158,8 @@ def extract_records(filepath):
                 records.append(
                     {
                         "file": filepath.name,
+                        "filepath": str(filepath),
+                        "sheet": sheet_name,
                         "year": year_hint,
                         "month": month_hint,
                         "day": day_hint,
@@ -208,6 +213,8 @@ def extract_records(filepath):
                         records.append(
                             {
                                 "file": filepath.name,
+                                "filepath": str(filepath),
+                                "sheet": sheet_name,
                                 "year": year_hint,
                                 "month": month_hint,
                                 "day": day_hint,
@@ -256,6 +263,7 @@ class App(tk.Tk):
         self.records = []
         self.last_results = []
         self.last_query = None
+        self._row_records = {}
         self._build_ui()
         self.after(50, self.load_data)
 
@@ -265,12 +273,19 @@ class App(tk.Tk):
 
         ttk.Label(top, text="Material name:").grid(row=0, column=0, sticky="w", padx=4)
         self.name_var = tk.StringVar()
-        self.name_entry = ttk.Entry(top, textvariable=self.name_var, width=18)
+        self.name_var.trace_add("write", self._uppercase_name)
+        self.name_entry = ttk.Entry(
+            top, textvariable=self.name_var, width=18,
+            font=("Segoe UI", 11, "bold"),
+        )
         self.name_entry.grid(row=0, column=1, padx=4)
 
         ttk.Label(top, text="Density:").grid(row=0, column=2, sticky="w", padx=(12, 4))
         self.density_var = tk.StringVar()
-        self.density_entry = ttk.Entry(top, textvariable=self.density_var, width=12)
+        self.density_entry = ttk.Entry(
+            top, textvariable=self.density_var, width=12,
+            font=("Segoe UI", 11, "bold"),
+        )
         self.density_entry.grid(row=0, column=3, padx=4)
         ttk.Label(top, text=f"(±{TOLERANCE})").grid(row=0, column=4, sticky="w")
 
@@ -313,10 +328,17 @@ class App(tk.Tk):
                 c, width=widths[c], anchor="center" if c != "file" else "w"
             )
         self.tree.tag_configure("group", background="#e8eef7", font=("Segoe UI", 9, "bold"))
+        self.tree.bind("<Double-1>", self._on_row_double_click)
         sb = ttk.Scrollbar(body, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
         self.tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="left", fill="y")
+
+    def _uppercase_name(self, *_):
+        current = self.name_var.get()
+        upper = current.upper()
+        if current != upper:
+            self.name_var.set(upper)
 
     def load_data(self):
         self.search_btn.config(state="disabled")
@@ -380,6 +402,7 @@ class App(tk.Tk):
 
         for iid in self.tree.get_children():
             self.tree.delete(iid)
+        self._row_records.clear()
 
         results = []
         for r in self.records:
@@ -422,7 +445,7 @@ class App(tk.Tk):
                 tags=("group",),
             )
             for r in recs:
-                self.tree.insert(
+                iid = self.tree.insert(
                     "",
                     "end",
                     values=(
@@ -431,6 +454,7 @@ class App(tk.Tk):
                         fmt(r["k"]), fmt(r["na"]), r["file"],
                     ),
                 )
+                self._row_records[iid] = r
 
         years_summary = ", ".join(
             f"{y}: {len(recs)}" for y, recs in sorted(per_year.items())
@@ -495,6 +519,75 @@ class App(tk.Tk):
             wb.close()
 
         self.status_var.set(f"Exported {len(results)} record(s) to {path}")
+
+    def _on_row_double_click(self, event):
+        iid = self.tree.identify_row(event.y)
+        if not iid:
+            return
+        record = self._row_records.get(iid)
+        if record is None:
+            return
+        filepath = record.get("filepath")
+        sheet = record.get("sheet")
+        if not filepath:
+            return
+        opened_at_sheet = self._open_excel_at_sheet(filepath, sheet)
+        if opened_at_sheet:
+            self.status_var.set(f"Opened {Path(filepath).name} → sheet '{sheet}'.")
+        else:
+            self.status_var.set(
+                f"Opened {Path(filepath).name}. Switch to sheet '{sheet}' manually."
+            )
+
+    def _open_excel_at_sheet(self, filepath, sheet_name):
+        path = Path(filepath)
+        if not path.is_file():
+            messagebox.showerror("File not found", f"Could not find:\n{filepath}")
+            return False
+        try:
+            import win32com.client  # type: ignore
+        except Exception:
+            try:
+                if sys.platform == "win32":
+                    os.startfile(str(path))
+                elif sys.platform == "darwin":
+                    subprocess.Popen(["open", str(path)])
+                else:
+                    subprocess.Popen(["xdg-open", str(path)])
+            except Exception as e:
+                messagebox.showerror("Open failed", str(e))
+            return False
+        try:
+            try:
+                excel = win32com.client.GetActiveObject("Excel.Application")
+            except Exception:
+                excel = win32com.client.Dispatch("Excel.Application")
+            excel.Visible = True
+            target_wb = None
+            target_full = str(path.resolve()).lower()
+            for wb in excel.Workbooks:
+                try:
+                    if str(Path(wb.FullName).resolve()).lower() == target_full:
+                        target_wb = wb
+                        break
+                except Exception:
+                    continue
+            if target_wb is None:
+                target_wb = excel.Workbooks.Open(str(path.resolve()))
+            target_wb.Activate()
+            if sheet_name:
+                for sheet in target_wb.Sheets:
+                    if sheet.Name == sheet_name:
+                        sheet.Activate()
+                        try:
+                            excel.WindowState = -4137  # xlMaximized
+                        except Exception:
+                            pass
+                        return True
+            return False
+        except Exception as e:
+            messagebox.showerror("Open failed", str(e))
+            return False
 
 
 if __name__ == "__main__":
