@@ -339,16 +339,24 @@ class App(tk.Tk):
             font=("Segoe UI", 11, "bold"),
         )
         self.density_entry.grid(row=0, column=3, padx=4)
-        ttk.Label(top, text=f"(±{TOLERANCE})").grid(row=0, column=4, sticky="w")
+
+        ttk.Label(top, text="Tolerance ±").grid(row=0, column=4, sticky="w", padx=(8, 2))
+        self.tolerance_var = tk.StringVar(value=f"{TOLERANCE}")
+        self.tolerance_combo = ttk.Combobox(
+            top, textvariable=self.tolerance_var, width=8, state="readonly",
+            values=("0.0005", "0.001"),
+        )
+        self.tolerance_combo.grid(row=0, column=5, padx=(0, 4))
+        self.tolerance_var.trace_add("write", self._on_tolerance_changed)
 
         self.search_btn = ttk.Button(top, text="Search", command=self.search)
-        self.search_btn.grid(row=0, column=5, padx=8)
+        self.search_btn.grid(row=0, column=6, padx=8)
         self.reload_btn = ttk.Button(top, text="Reload data", command=self.load_data)
-        self.reload_btn.grid(row=0, column=6, padx=4)
+        self.reload_btn.grid(row=0, column=7, padx=4)
         self.export_btn = ttk.Button(
             top, text="Export to Excel", command=self.export_results, state="disabled"
         )
-        self.export_btn.grid(row=0, column=7, padx=4)
+        self.export_btn.grid(row=0, column=8, padx=4)
 
         body = ttk.Frame(parent)
         body.pack(fill="both", expand=True, padx=10, pady=10)
@@ -405,23 +413,33 @@ class App(tk.Tk):
             font=("Segoe UI", 11, "bold"),
         ).grid(row=0, column=5, padx=4)
 
+        ttk.Label(top, text="Tolerance ±").grid(
+            row=0, column=6, sticky="w", padx=(12, 2)
+        )
+        self.tolerance_combo_date = ttk.Combobox(
+            top, textvariable=self.tolerance_var, width=8, state="readonly",
+            values=("0.0005", "0.001"),
+        )
+        self.tolerance_combo_date.grid(row=0, column=7, padx=(0, 4))
+
         self.date_search_btn = ttk.Button(top, text="Compare", command=self.date_search)
-        self.date_search_btn.grid(row=0, column=6, padx=8)
+        self.date_search_btn.grid(row=0, column=8, padx=8)
         self.date_export_btn = ttk.Button(
             top, text="Export to Excel",
             command=self.export_date_results, state="disabled",
         )
-        self.date_export_btn.grid(row=0, column=7, padx=4)
+        self.date_export_btn.grid(row=0, column=9, padx=4)
 
         ttk.Label(
             top,
             text="Pick a specific spreadsheet (day/month/year). "
-                 "Top pane shows that day; bottom shows every other record "
-                 "in the folder for the same materials, with Δ vs. the selected day.",
+                 "Top pane shows that day; bottom shows other records in the "
+                 "folder with the same material whose density is within the "
+                 "selected tolerance.",
             foreground="#555",
-            wraplength=900,
+            wraplength=1000,
             justify="left",
-        ).grid(row=1, column=0, columnspan=8, sticky="w", padx=4, pady=(4, 0))
+        ).grid(row=1, column=0, columnspan=10, sticky="w", padx=4, pady=(4, 0))
 
         body = ttk.PanedWindow(parent, orient="vertical")
         body.pack(fill="both", expand=True, padx=10, pady=10)
@@ -456,10 +474,11 @@ class App(tk.Tk):
         self.sel_tree.pack(side="left", fill="both", expand=True)
         sel_sb.pack(side="left", fill="y")
 
-        cmp_frame = ttk.LabelFrame(
+        self.cmp_frame = ttk.LabelFrame(
             body,
             text=f"Comparison — same material, density ±{TOLERANCE}",
         )
+        cmp_frame = self.cmp_frame
         body.add(cmp_frame, weight=2)
 
         cols = (
@@ -499,6 +518,19 @@ class App(tk.Tk):
         upper = current.upper()
         if current != upper:
             self.name_var.set(upper)
+
+    def _current_tolerance(self):
+        try:
+            return float(self.tolerance_var.get())
+        except (ValueError, tk.TclError):
+            return TOLERANCE
+
+    def _on_tolerance_changed(self, *_):
+        tol = self._current_tolerance()
+        if hasattr(self, "cmp_frame"):
+            self.cmp_frame.config(
+                text=f"Comparison — same material, density ±{tol}"
+            )
 
     def load_data(self):
         self.search_btn.config(state="disabled")
@@ -588,11 +620,12 @@ class App(tk.Tk):
         self.progress.start(60)
         self.update_idletasks()
 
+        tol = self._current_tolerance()
         results = []
         for r in self.records:
             if not name_match(name, r["location"]):
                 continue
-            if abs(r["density"] - density) > TOLERANCE:
+            if abs(r["density"] - density) > tol:
                 continue
             results.append(r)
 
@@ -605,7 +638,7 @@ class App(tk.Tk):
 
         if not results:
             self.status_var.set(
-                f"No matches for '{name}' near density {density:.4f} (±{TOLERANCE})."
+                f"No matches for '{name}' near density {density:.4f} (±{tol})."
             )
             return
 
@@ -648,7 +681,7 @@ class App(tk.Tk):
         )
         self.status_var.set(
             f"Found {len(results)} match(es) for '{name}' at "
-            f"{density:.4f} ±{TOLERANCE} — {years_summary}"
+            f"{density:.4f} ±{tol} — {years_summary}"
         )
 
     def export_results(self):
@@ -780,6 +813,7 @@ class App(tk.Tk):
         for r in selected:
             baseline_by_material.setdefault(r["location"].upper(), r)
 
+        tol = self._current_tolerance()
         compare_records = []
         for r in self.records:
             key = r["location"].upper()
@@ -788,7 +822,7 @@ class App(tk.Tk):
                 continue
             if r["day"] == day and r["month"] == month and r["year"] == year:
                 continue
-            if abs(r["density"] - baseline["density"]) > TOLERANCE:
+            if abs(r["density"] - baseline["density"]) > tol:
                 continue
             compare_records.append(r)
 
@@ -843,7 +877,7 @@ class App(tk.Tk):
             f"Selected {day:02d}/{month:02d}/{year}: "
             f"{len(selected)} material(s). "
             f"Found {total_rows} match(es) in folder with same material "
-            f"and density ±{TOLERANCE}."
+            f"and density ±{tol}."
         )
 
     def export_date_results(self):
