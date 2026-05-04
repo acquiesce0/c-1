@@ -259,16 +259,68 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Brine Density Lookup")
-        self.geometry("1150x620")
+        self.geometry("1180x650")
         self.records = []
         self.last_results = []
         self.last_query = None
         self._row_records = {}
+        self._date_row_records = {}
+        self.last_date_results = []
+        self.last_date_query = None
         self._build_ui()
         self.after(50, self.load_data)
 
     def _build_ui(self):
-        top = ttk.Frame(self, padding=10)
+        self.status_var = tk.StringVar(value="Loading data...")
+
+        status_bar = ttk.Frame(self, relief="groove", borderwidth=1)
+        status_bar.pack(side="bottom", fill="x")
+        self.progress = ttk.Progressbar(
+            status_bar, orient="horizontal", mode="determinate", length=260,
+        )
+        self.progress.pack(side="right", padx=8, pady=4)
+        ttk.Label(
+            status_bar, textvariable=self.status_var, anchor="w",
+            font=("Segoe UI", 9),
+        ).pack(side="left", fill="x", expand=True, padx=10, pady=4)
+
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(side="top", fill="both", expand=True, padx=10, pady=(10, 4))
+
+        self.search_tab = ttk.Frame(self.notebook)
+        self.date_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.search_tab, text="Material Search")
+        self.notebook.add(self.date_tab, text="Date Comparison")
+
+        self._build_search_tab(self.search_tab)
+        self._build_date_tab(self.date_tab)
+        self.bind("<Return>", self._on_enter_pressed)
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+
+    def _on_tab_changed(self, _event=None):
+        try:
+            idx = self.notebook.index("current")
+        except tk.TclError:
+            return
+        if idx == 1:
+            target = (1420, 780)
+        else:
+            target = (1180, 650)
+        cur_w = self.winfo_width()
+        cur_h = self.winfo_height()
+        new_w = max(cur_w, target[0])
+        new_h = max(cur_h, target[1])
+        if new_w != cur_w or new_h != cur_h:
+            self.geometry(f"{new_w}x{new_h}")
+
+    def _on_enter_pressed(self, _event):
+        if self.notebook.index("current") == 0:
+            self.search()
+        else:
+            self.date_search()
+
+    def _build_search_tab(self, parent):
+        top = ttk.Frame(parent, padding=10)
         top.pack(fill="x")
 
         ttk.Label(top, text="Material name:").grid(row=0, column=0, sticky="w", padx=4)
@@ -297,14 +349,8 @@ class App(tk.Tk):
             top, text="Export to Excel", command=self.export_results, state="disabled"
         )
         self.export_btn.grid(row=0, column=7, padx=4)
-        self.bind("<Return>", lambda e: self.search())
 
-        self.status_var = tk.StringVar(value="Loading data...")
-        ttk.Label(self, textvariable=self.status_var, anchor="w").pack(
-            fill="x", padx=10
-        )
-
-        body = ttk.Frame(self)
+        body = ttk.Frame(parent)
         body.pack(fill="both", expand=True, padx=10, pady=10)
 
         cols = (
@@ -334,6 +380,122 @@ class App(tk.Tk):
         self.tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="left", fill="y")
 
+    def _build_date_tab(self, parent):
+        top = ttk.Frame(parent, padding=10)
+        top.pack(fill="x")
+
+        ttk.Label(top, text="Day:").grid(row=0, column=0, sticky="w", padx=4)
+        self.day_var = tk.StringVar()
+        ttk.Entry(
+            top, textvariable=self.day_var, width=5,
+            font=("Segoe UI", 11, "bold"),
+        ).grid(row=0, column=1, padx=4)
+
+        ttk.Label(top, text="Month:").grid(row=0, column=2, sticky="w", padx=(12, 4))
+        self.month_var = tk.StringVar()
+        ttk.Entry(
+            top, textvariable=self.month_var, width=5,
+            font=("Segoe UI", 11, "bold"),
+        ).grid(row=0, column=3, padx=4)
+
+        ttk.Label(top, text="Year:").grid(row=0, column=4, sticky="w", padx=(12, 4))
+        self.year_var = tk.StringVar()
+        ttk.Entry(
+            top, textvariable=self.year_var, width=8,
+            font=("Segoe UI", 11, "bold"),
+        ).grid(row=0, column=5, padx=4)
+
+        self.date_search_btn = ttk.Button(top, text="Compare", command=self.date_search)
+        self.date_search_btn.grid(row=0, column=6, padx=8)
+        self.date_export_btn = ttk.Button(
+            top, text="Export to Excel",
+            command=self.export_date_results, state="disabled",
+        )
+        self.date_export_btn.grid(row=0, column=7, padx=4)
+
+        ttk.Label(
+            top,
+            text="Pick a specific spreadsheet (day/month/year). "
+                 "Top pane shows that day; bottom shows every other record "
+                 "in the folder for the same materials, with Δ vs. the selected day.",
+            foreground="#555",
+            wraplength=900,
+            justify="left",
+        ).grid(row=1, column=0, columnspan=8, sticky="w", padx=4, pady=(4, 0))
+
+        body = ttk.PanedWindow(parent, orient="vertical")
+        body.pack(fill="both", expand=True, padx=10, pady=10)
+
+        sel_frame = ttk.LabelFrame(body, text="Selected day")
+        body.add(sel_frame, weight=1)
+
+        sel_cols = (
+            "material", "density", "mg", "ca", "k", "na", "file",
+        )
+        sel_headings = {
+            "material": "Material", "density": "Density",
+            "mg": "Mg+2", "ca": "Ca+2", "k": "K+ A.A.", "na": "Na+ A.A.",
+            "file": "Source File",
+        }
+        sel_widths = {
+            "material": 140, "density": 90,
+            "mg": 90, "ca": 90, "k": 90, "na": 90, "file": 240,
+        }
+        self.sel_tree = ttk.Treeview(
+            sel_frame, columns=sel_cols, show="headings", height=8
+        )
+        for c in sel_cols:
+            self.sel_tree.heading(c, text=sel_headings[c])
+            self.sel_tree.column(
+                c, width=sel_widths[c],
+                anchor="center" if c != "file" else "w",
+            )
+        self.sel_tree.bind("<Double-1>", self._on_sel_row_double_click)
+        sel_sb = ttk.Scrollbar(sel_frame, orient="vertical", command=self.sel_tree.yview)
+        self.sel_tree.configure(yscrollcommand=sel_sb.set)
+        self.sel_tree.pack(side="left", fill="both", expand=True)
+        sel_sb.pack(side="left", fill="y")
+
+        cmp_frame = ttk.LabelFrame(body, text="Comparison — other records in folder")
+        body.add(cmp_frame, weight=2)
+
+        cols = (
+            "material", "year", "date", "density",
+            "mg", "ca", "k", "na",
+            "d_density", "d_mg", "d_ca", "d_k", "d_na",
+            "file",
+        )
+        headings = {
+            "material": "Material", "year": "Year", "date": "Date",
+            "density": "Density", "mg": "Mg+2", "ca": "Ca+2",
+            "k": "K+ A.A.", "na": "Na+ A.A.",
+            "d_density": "Δ Density", "d_mg": "Δ Mg",
+            "d_ca": "Δ Ca", "d_k": "Δ K", "d_na": "Δ Na",
+            "file": "Source File",
+        }
+        widths = {
+            "material": 110, "year": 55, "date": 90,
+            "density": 75, "mg": 70, "ca": 70, "k": 70, "na": 70,
+            "d_density": 75, "d_mg": 65, "d_ca": 65, "d_k": 65, "d_na": 65,
+            "file": 180,
+        }
+        self.date_tree = ttk.Treeview(cmp_frame, columns=cols, show="headings", height=14)
+        for c in cols:
+            self.date_tree.heading(c, text=headings[c])
+            self.date_tree.column(
+                c, width=widths[c], anchor="center" if c != "file" else "w"
+            )
+        self.date_tree.tag_configure(
+            "group", background="#e8eef7", font=("Segoe UI", 9, "bold")
+        )
+        self.date_tree.bind("<Double-1>", self._on_date_row_double_click)
+        sb = ttk.Scrollbar(cmp_frame, orient="vertical", command=self.date_tree.yview)
+        self.date_tree.configure(yscrollcommand=sb.set)
+        self.date_tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="left", fill="y")
+
+        self._sel_row_records = {}
+
     def _uppercase_name(self, *_):
         current = self.name_var.get()
         upper = current.upper()
@@ -343,9 +505,22 @@ class App(tk.Tk):
     def load_data(self):
         self.search_btn.config(state="disabled")
         self.reload_btn.config(state="disabled")
+        self.date_search_btn.config(state="disabled")
+
+        self.status_var.set("Scanning years/ folder...")
+        self.progress.config(mode="indeterminate", value=0)
+        self.progress.start(80)
+        self.update_idletasks()
 
         def progress(i, total, name):
-            self.after(0, lambda: self.status_var.set(f"Loading {i}/{total}: {name}"))
+            def update():
+                if total > 0:
+                    if str(self.progress["mode"]) != "determinate":
+                        self.progress.stop()
+                        self.progress.config(mode="determinate", maximum=total)
+                    self.progress["value"] = i
+                self.status_var.set(f"Loading {i}/{total}: {name}")
+            self.after(0, update)
 
         def worker():
             try:
@@ -361,9 +536,15 @@ class App(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_loaded(self, recs):
+        try:
+            self.progress.stop()
+        except Exception:
+            pass
+        self.progress.config(mode="determinate", value=0, maximum=100)
         self.records = recs
         self.search_btn.config(state="normal")
         self.reload_btn.config(state="normal")
+        self.date_search_btn.config(state="normal")
         self.name_entry.focus_set()
         if not YEARS_DIR.is_dir():
             self.status_var.set(
@@ -404,6 +585,11 @@ class App(tk.Tk):
             self.tree.delete(iid)
         self._row_records.clear()
 
+        self.status_var.set(f"Searching for '{name}' at density {density:.4f}...")
+        self.progress.config(mode="indeterminate")
+        self.progress.start(60)
+        self.update_idletasks()
+
         results = []
         for r in self.records:
             if not name_match(name, r["location"]):
@@ -411,6 +597,9 @@ class App(tk.Tk):
             if abs(r["density"] - density) > TOLERANCE:
                 continue
             results.append(r)
+
+        self.progress.stop()
+        self.progress.config(mode="determinate", value=0, maximum=100)
 
         self.last_results = results
         self.last_query = (name, density)
@@ -519,6 +708,302 @@ class App(tk.Tk):
             wb.close()
 
         self.status_var.set(f"Exported {len(results)} record(s) to {path}")
+
+    def date_search(self):
+        d_str = self.day_var.get().strip()
+        m_str = self.month_var.get().strip()
+        y_str = self.year_var.get().strip()
+        if not d_str or not m_str or not y_str:
+            messagebox.showwarning(
+                "Missing input", "Enter Day, Month, and Year."
+            )
+            return
+        try:
+            day = int(d_str)
+            month = int(m_str)
+            year = int(y_str)
+        except ValueError:
+            messagebox.showwarning(
+                "Invalid input", "Day, Month, and Year must be numbers."
+            )
+            return
+        if not (1 <= day <= 31) or not (1 <= month <= 12):
+            messagebox.showwarning(
+                "Invalid date", "Day must be 1-31 and Month must be 1-12."
+            )
+            return
+
+        for iid in self.sel_tree.get_children():
+            self.sel_tree.delete(iid)
+        for iid in self.date_tree.get_children():
+            self.date_tree.delete(iid)
+        self._sel_row_records.clear()
+        self._date_row_records.clear()
+
+        self.status_var.set(
+            f"Comparing {day:02d}/{month:02d}/{year} against the folder..."
+        )
+        self.progress.config(mode="indeterminate")
+        self.progress.start(60)
+        self.update_idletasks()
+
+        selected = [
+            r for r in self.records
+            if r["day"] == day and r["month"] == month and r["year"] == year
+        ]
+
+        if not selected:
+            self.progress.stop()
+            self.progress.config(mode="determinate", value=0, maximum=100)
+            self.last_date_results = []
+            self.last_date_query = None
+            self.date_export_btn.config(state="disabled")
+            self.status_var.set(
+                f"No spreadsheet found for {day:02d}/{month:02d}/{year}."
+            )
+            return
+
+        def fmt(v):
+            return f"{v:.4f}" if isinstance(v, (int, float)) else ""
+
+        def fmt_delta(v):
+            if not isinstance(v, (int, float)):
+                return ""
+            sign = "+" if v > 0 else ""
+            return f"{sign}{v:.4f}"
+
+        selected.sort(key=lambda r: r["location"].upper())
+        for r in selected:
+            iid = self.sel_tree.insert(
+                "", "end",
+                values=(
+                    r["location"],
+                    fmt(r["density"]), fmt(r["mg"]), fmt(r["ca"]),
+                    fmt(r["k"]), fmt(r["na"]), r["file"],
+                ),
+            )
+            self._sel_row_records[iid] = r
+
+        baseline_by_material = {}
+        for r in selected:
+            baseline_by_material.setdefault(r["location"].upper(), r)
+
+        compare_records = []
+        for r in self.records:
+            key = r["location"].upper()
+            if key not in baseline_by_material:
+                continue
+            if (
+                r["day"] == day and r["month"] == month and r["year"] == year
+            ):
+                continue
+            compare_records.append(r)
+
+        by_material = {}
+        for r in compare_records:
+            by_material.setdefault(r["location"].upper(), []).append(r)
+
+        total_rows = 0
+        for material in sorted(baseline_by_material):
+            baseline = baseline_by_material[material]
+            recs = sorted(
+                by_material.get(material, []),
+                key=lambda r: (r["year"], r["month"], r["day"]),
+            )
+            self.date_tree.insert(
+                "", "end",
+                values=(
+                    f"— {material} —",
+                    f"{len(recs)} other record(s)",
+                    "", "", "", "", "", "",
+                    "", "", "", "", "", "",
+                ),
+                tags=("group",),
+            )
+            for r in recs:
+                def diff(key):
+                    a, b = r.get(key), baseline.get(key)
+                    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+                        return a - b
+                    return None
+
+                date_str = (
+                    r["date"].isoformat() if r.get("date") else
+                    f"{r['year']}-{r['month']:02d}-{r['day']:02d}"
+                )
+                iid = self.date_tree.insert(
+                    "", "end",
+                    values=(
+                        r["location"], r["year"], date_str,
+                        fmt(r["density"]), fmt(r["mg"]), fmt(r["ca"]),
+                        fmt(r["k"]), fmt(r["na"]),
+                        fmt_delta(diff("density")),
+                        fmt_delta(diff("mg")),
+                        fmt_delta(diff("ca")),
+                        fmt_delta(diff("k")),
+                        fmt_delta(diff("na")),
+                        r["file"],
+                    ),
+                )
+                self._date_row_records[iid] = r
+                total_rows += 1
+
+        self.progress.stop()
+        self.progress.config(mode="determinate", value=0, maximum=100)
+
+        self.last_date_results = {
+            "selected": selected,
+            "compare": compare_records,
+            "baselines": baseline_by_material,
+        }
+        self.last_date_query = (day, month, year)
+        self.date_export_btn.config(state="normal")
+
+        self.status_var.set(
+            f"Selected {day:02d}/{month:02d}/{year}: "
+            f"{len(selected)} material(s). "
+            f"Comparison shows {total_rows} other record(s) "
+            f"across the folder. Δ vs. selected day."
+        )
+
+    def export_date_results(self):
+        if not self.last_date_results:
+            messagebox.showinfo("Nothing to export", "Run a date comparison first.")
+            return
+
+        day, month, year = self.last_date_query
+        default_filename = f"compare_{year}-{month:02d}-{day:02d}.xlsx"
+
+        path = filedialog.asksaveasfilename(
+            title="Export date comparison",
+            defaultextension=".xlsx",
+            filetypes=[("Excel workbook", "*.xlsx")],
+            initialfile=default_filename,
+        )
+        if not path:
+            return
+
+        selected = self.last_date_results["selected"]
+        compare = self.last_date_results["compare"]
+        baselines = self.last_date_results["baselines"]
+
+        wb = openpyxl.Workbook()
+
+        ws1 = wb.active
+        ws1.title = "Selected day"
+        ws1.append([
+            "Material", "Date", "Density", "Mg+2", "Ca+2",
+            "K+ A.A.", "Na+ A.A.", "Source File",
+        ])
+        for cell in ws1[1]:
+            cell.font = openpyxl.styles.Font(bold=True)
+        for r in selected:
+            date_str = (
+                r["date"].isoformat() if r.get("date") else
+                f"{r['year']}-{r['month']:02d}-{r['day']:02d}"
+            )
+            ws1.append([
+                r["location"], date_str,
+                r["density"], r["mg"], r["ca"], r["k"], r["na"], r["file"],
+            ])
+        for i, w in enumerate([18, 12, 10, 10, 10, 10, 10, 30], 1):
+            ws1.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
+        ws1.freeze_panes = "A2"
+
+        ws2 = wb.create_sheet("Comparison")
+        ws2.append([
+            "Material", "Year", "Date", "Density", "Mg+2", "Ca+2",
+            "K+ A.A.", "Na+ A.A.",
+            "Δ Density", "Δ Mg", "Δ Ca", "Δ K", "Δ Na",
+            "Source File",
+        ])
+        for cell in ws2[1]:
+            cell.font = openpyxl.styles.Font(bold=True)
+
+        def diff(a, b):
+            if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+                return a - b
+            return None
+
+        by_material = {}
+        for r in compare:
+            by_material.setdefault(r["location"].upper(), []).append(r)
+
+        for material in sorted(baselines):
+            baseline = baselines[material]
+            recs = sorted(
+                by_material.get(material, []),
+                key=lambda r: (r["year"], r["month"], r["day"]),
+            )
+            for r in recs:
+                date_str = (
+                    r["date"].isoformat() if r.get("date") else
+                    f"{r['year']}-{r['month']:02d}-{r['day']:02d}"
+                )
+                ws2.append([
+                    r["location"], r["year"], date_str,
+                    r["density"], r["mg"], r["ca"], r["k"], r["na"],
+                    diff(r["density"], baseline["density"]),
+                    diff(r["mg"], baseline["mg"]),
+                    diff(r["ca"], baseline["ca"]),
+                    diff(r["k"], baseline["k"]),
+                    diff(r["na"], baseline["na"]),
+                    r["file"],
+                ])
+
+        for i, w in enumerate(
+            [16, 7, 12, 10, 10, 10, 10, 10, 11, 10, 10, 10, 10, 30], 1
+        ):
+            ws2.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
+        ws2.freeze_panes = "A2"
+
+        try:
+            wb.save(path)
+        except Exception as e:
+            messagebox.showerror("Export failed", str(e))
+            return
+        finally:
+            wb.close()
+
+        self.status_var.set(f"Exported date comparison to {path}")
+
+    def _on_sel_row_double_click(self, event):
+        iid = self.sel_tree.identify_row(event.y)
+        if not iid:
+            return
+        record = self._sel_row_records.get(iid)
+        if record is None:
+            return
+        filepath = record.get("filepath")
+        sheet = record.get("sheet")
+        if not filepath:
+            return
+        opened_at_sheet = self._open_excel_at_sheet(filepath, sheet)
+        if opened_at_sheet:
+            self.status_var.set(f"Opened {Path(filepath).name} → sheet '{sheet}'.")
+        else:
+            self.status_var.set(
+                f"Opened {Path(filepath).name}. Switch to sheet '{sheet}' manually."
+            )
+
+    def _on_date_row_double_click(self, event):
+        iid = self.date_tree.identify_row(event.y)
+        if not iid:
+            return
+        record = self._date_row_records.get(iid)
+        if record is None:
+            return
+        filepath = record.get("filepath")
+        sheet = record.get("sheet")
+        if not filepath:
+            return
+        opened_at_sheet = self._open_excel_at_sheet(filepath, sheet)
+        if opened_at_sheet:
+            self.status_var.set(f"Opened {Path(filepath).name} → sheet '{sheet}'.")
+        else:
+            self.status_var.set(
+                f"Opened {Path(filepath).name}. Switch to sheet '{sheet}' manually."
+            )
 
     def _on_row_double_click(self, event):
         iid = self.tree.identify_row(event.y)
