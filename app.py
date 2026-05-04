@@ -456,28 +456,26 @@ class App(tk.Tk):
         self.sel_tree.pack(side="left", fill="both", expand=True)
         sel_sb.pack(side="left", fill="y")
 
-        cmp_frame = ttk.LabelFrame(body, text="Comparison — other records in folder")
+        cmp_frame = ttk.LabelFrame(
+            body,
+            text=f"Comparison — same material, density ±{TOLERANCE}",
+        )
         body.add(cmp_frame, weight=2)
 
         cols = (
             "material", "year", "date", "density",
-            "mg", "ca", "k", "na",
-            "d_density", "d_mg", "d_ca", "d_k", "d_na",
-            "file",
+            "mg", "ca", "k", "na", "file",
         )
         headings = {
             "material": "Material", "year": "Year", "date": "Date",
             "density": "Density", "mg": "Mg+2", "ca": "Ca+2",
             "k": "K+ A.A.", "na": "Na+ A.A.",
-            "d_density": "Δ Density", "d_mg": "Δ Mg",
-            "d_ca": "Δ Ca", "d_k": "Δ K", "d_na": "Δ Na",
             "file": "Source File",
         }
         widths = {
-            "material": 110, "year": 55, "date": 90,
-            "density": 75, "mg": 70, "ca": 70, "k": 70, "na": 70,
-            "d_density": 75, "d_mg": 65, "d_ca": 65, "d_k": 65, "d_na": 65,
-            "file": 180,
+            "material": 130, "year": 60, "date": 100,
+            "density": 90, "mg": 90, "ca": 90, "k": 90, "na": 90,
+            "file": 240,
         }
         self.date_tree = ttk.Treeview(cmp_frame, columns=cols, show="headings", height=14)
         for c in cols:
@@ -766,12 +764,6 @@ class App(tk.Tk):
         def fmt(v):
             return f"{v:.4f}" if isinstance(v, (int, float)) else ""
 
-        def fmt_delta(v):
-            if not isinstance(v, (int, float)):
-                return ""
-            sign = "+" if v > 0 else ""
-            return f"{sign}{v:.4f}"
-
         selected.sort(key=lambda r: r["location"].upper())
         for r in selected:
             iid = self.sel_tree.insert(
@@ -791,11 +783,12 @@ class App(tk.Tk):
         compare_records = []
         for r in self.records:
             key = r["location"].upper()
-            if key not in baseline_by_material:
+            baseline = baseline_by_material.get(key)
+            if baseline is None:
                 continue
-            if (
-                r["day"] == day and r["month"] == month and r["year"] == year
-            ):
+            if r["day"] == day and r["month"] == month and r["year"] == year:
+                continue
+            if abs(r["density"] - baseline["density"]) > TOLERANCE:
                 continue
             compare_records.append(r)
 
@@ -805,7 +798,6 @@ class App(tk.Tk):
 
         total_rows = 0
         for material in sorted(baseline_by_material):
-            baseline = baseline_by_material[material]
             recs = sorted(
                 by_material.get(material, []),
                 key=lambda r: (r["year"], r["month"], r["day"]),
@@ -814,19 +806,12 @@ class App(tk.Tk):
                 "", "end",
                 values=(
                     f"— {material} —",
-                    f"{len(recs)} other record(s)",
-                    "", "", "", "", "", "",
-                    "", "", "", "", "", "",
+                    f"{len(recs)} match(es)",
+                    "", "", "", "", "", "", "",
                 ),
                 tags=("group",),
             )
             for r in recs:
-                def diff(key):
-                    a, b = r.get(key), baseline.get(key)
-                    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
-                        return a - b
-                    return None
-
                 date_str = (
                     r["date"].isoformat() if r.get("date") else
                     f"{r['year']}-{r['month']:02d}-{r['day']:02d}"
@@ -837,11 +822,6 @@ class App(tk.Tk):
                         r["location"], r["year"], date_str,
                         fmt(r["density"]), fmt(r["mg"]), fmt(r["ca"]),
                         fmt(r["k"]), fmt(r["na"]),
-                        fmt_delta(diff("density")),
-                        fmt_delta(diff("mg")),
-                        fmt_delta(diff("ca")),
-                        fmt_delta(diff("k")),
-                        fmt_delta(diff("na")),
                         r["file"],
                     ),
                 )
@@ -862,8 +842,8 @@ class App(tk.Tk):
         self.status_var.set(
             f"Selected {day:02d}/{month:02d}/{year}: "
             f"{len(selected)} material(s). "
-            f"Comparison shows {total_rows} other record(s) "
-            f"across the folder. Δ vs. selected day."
+            f"Found {total_rows} match(es) in folder with same material "
+            f"and density ±{TOLERANCE}."
         )
 
     def export_date_results(self):
@@ -913,24 +893,16 @@ class App(tk.Tk):
         ws2 = wb.create_sheet("Comparison")
         ws2.append([
             "Material", "Year", "Date", "Density", "Mg+2", "Ca+2",
-            "K+ A.A.", "Na+ A.A.",
-            "Δ Density", "Δ Mg", "Δ Ca", "Δ K", "Δ Na",
-            "Source File",
+            "K+ A.A.", "Na+ A.A.", "Source File",
         ])
         for cell in ws2[1]:
             cell.font = openpyxl.styles.Font(bold=True)
-
-        def diff(a, b):
-            if isinstance(a, (int, float)) and isinstance(b, (int, float)):
-                return a - b
-            return None
 
         by_material = {}
         for r in compare:
             by_material.setdefault(r["location"].upper(), []).append(r)
 
         for material in sorted(baselines):
-            baseline = baselines[material]
             recs = sorted(
                 by_material.get(material, []),
                 key=lambda r: (r["year"], r["month"], r["day"]),
@@ -943,16 +915,11 @@ class App(tk.Tk):
                 ws2.append([
                     r["location"], r["year"], date_str,
                     r["density"], r["mg"], r["ca"], r["k"], r["na"],
-                    diff(r["density"], baseline["density"]),
-                    diff(r["mg"], baseline["mg"]),
-                    diff(r["ca"], baseline["ca"]),
-                    diff(r["k"], baseline["k"]),
-                    diff(r["na"], baseline["na"]),
                     r["file"],
                 ])
 
         for i, w in enumerate(
-            [16, 7, 12, 10, 10, 10, 10, 10, 11, 10, 10, 10, 10, 30], 1
+            [16, 7, 12, 10, 10, 10, 10, 10, 30], 1
         ):
             ws2.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
         ws2.freeze_panes = "A2"
