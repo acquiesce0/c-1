@@ -289,11 +289,14 @@ class App(tk.Tk):
 
         self.search_tab = ttk.Frame(self.notebook)
         self.date_tab = ttk.Frame(self.notebook)
+        self.month_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.search_tab, text="Material Search")
         self.notebook.add(self.date_tab, text="Date Comparison")
+        self.notebook.add(self.month_tab, text="Material by Month")
 
         self._build_search_tab(self.search_tab)
         self._build_date_tab(self.date_tab)
+        self._build_month_tab(self.month_tab)
         self.bind("<Return>", self._on_enter_pressed)
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
@@ -304,6 +307,8 @@ class App(tk.Tk):
             return
         if idx == 1:
             target = (1420, 780)
+        elif idx == 2:
+            target = (1180, 650)
         else:
             target = (1180, 650)
         cur_w = self.winfo_width()
@@ -314,10 +319,13 @@ class App(tk.Tk):
             self.geometry(f"{new_w}x{new_h}")
 
     def _on_enter_pressed(self, _event):
-        if self.notebook.index("current") == 0:
+        idx = self.notebook.index("current")
+        if idx == 0:
             self.search()
-        else:
+        elif idx == 1:
             self.date_search()
+        else:
+            self.month_search()
 
     def _build_search_tab(self, parent):
         top = ttk.Frame(parent, padding=10)
@@ -448,16 +456,19 @@ class App(tk.Tk):
         body.add(sel_frame, weight=1)
 
         sel_cols = (
-            "material", "density", "mg", "ca", "k", "na", "file",
+            "material", "year", "date", "density",
+            "mg", "ca", "k", "na", "file",
         )
         sel_headings = {
-            "material": "Material", "density": "Density",
+            "material": "Material", "year": "Year", "date": "Date",
+            "density": "Density",
             "mg": "Mg+2", "ca": "Ca+2", "k": "K+ A.A.", "na": "Na+ A.A.",
             "file": "Source File",
         }
         sel_widths = {
-            "material": 140, "density": 90,
-            "mg": 90, "ca": 90, "k": 90, "na": 90, "file": 240,
+            "material": 130, "year": 60, "date": 100,
+            "density": 90, "mg": 90, "ca": 90, "k": 90, "na": 90,
+            "file": 240,
         }
         self.sel_tree = ttk.Treeview(
             sel_frame, columns=sel_cols, show="headings", height=8
@@ -513,6 +524,149 @@ class App(tk.Tk):
 
         self._sel_row_records = {}
 
+    def _build_month_tab(self, parent):
+        top = ttk.Frame(parent, padding=10)
+        top.pack(fill="x")
+
+        ttk.Label(top, text="Material name:").grid(row=0, column=0, sticky="w", padx=4)
+        self.month_name_var = tk.StringVar()
+        self.month_name_var.trace_add("write", self._uppercase_month_name)
+        ttk.Entry(
+            top, textvariable=self.month_name_var, width=18,
+            font=("Segoe UI", 11, "bold"),
+        ).grid(row=0, column=1, padx=4)
+
+        ttk.Label(top, text="Month:").grid(row=0, column=2, sticky="w", padx=(12, 4))
+        self.month_month_var = tk.StringVar()
+        ttk.Entry(
+            top, textvariable=self.month_month_var, width=5,
+            font=("Segoe UI", 11, "bold"),
+        ).grid(row=0, column=3, padx=4)
+
+        ttk.Label(top, text="Year:").grid(row=0, column=4, sticky="w", padx=(12, 4))
+        self.month_year_var = tk.StringVar()
+        ttk.Entry(
+            top, textvariable=self.month_year_var, width=8,
+            font=("Segoe UI", 11, "bold"),
+        ).grid(row=0, column=5, padx=4)
+
+        self.month_search_btn = ttk.Button(top, text="Search", command=self.month_search)
+        self.month_search_btn.grid(row=0, column=6, padx=8)
+
+        body = ttk.Frame(parent)
+        body.pack(fill="both", expand=True, padx=10, pady=10)
+
+        cols = (
+            "date", "location", "density",
+            "mg", "ca", "k", "na", "file",
+        )
+        headings = {
+            "date": "Date", "location": "Material", "density": "Density",
+            "mg": "Mg+2", "ca": "Ca+2", "k": "K+ A.A.", "na": "Na+ A.A.",
+            "file": "Source File",
+        }
+        widths = {
+            "date": 100, "location": 130, "density": 90,
+            "mg": 90, "ca": 90, "k": 90, "na": 90, "file": 240,
+        }
+        self.month_tree = ttk.Treeview(body, columns=cols, show="headings", height=22)
+        for c in cols:
+            self.month_tree.heading(c, text=headings[c])
+            self.month_tree.column(
+                c, width=widths[c], anchor="center" if c != "file" else "w"
+            )
+        self.month_tree.bind("<Double-1>", self._on_month_row_double_click)
+        sb = ttk.Scrollbar(body, orient="vertical", command=self.month_tree.yview)
+        self.month_tree.configure(yscrollcommand=sb.set)
+        self.month_tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="left", fill="y")
+
+        self._month_row_records = {}
+
+    def _uppercase_month_name(self, *_):
+        current = self.month_name_var.get()
+        upper = current.upper()
+        if current != upper:
+            self.month_name_var.set(upper)
+
+    def month_search(self):
+        name = self.month_name_var.get().strip()
+        m_str = self.month_month_var.get().strip()
+        y_str = self.month_year_var.get().strip()
+        if not name or not m_str or not y_str:
+            messagebox.showwarning(
+                "Missing input", "Enter Material, Month, and Year."
+            )
+            return
+        try:
+            month = int(m_str)
+            year = int(y_str)
+        except ValueError:
+            messagebox.showwarning(
+                "Invalid input", "Month and Year must be numbers."
+            )
+            return
+        if not (1 <= month <= 12):
+            messagebox.showwarning("Invalid month", "Month must be 1-12.")
+            return
+
+        for iid in self.month_tree.get_children():
+            self.month_tree.delete(iid)
+        self._month_row_records.clear()
+
+        results = [
+            r for r in self.records
+            if r["month"] == month and r["year"] == year
+            and name_match(name, r["location"])
+        ]
+        results.sort(key=lambda r: (r["day"], r["location"]))
+
+        def fmt(v):
+            return f"{v:.4f}" if isinstance(v, (int, float)) else ""
+
+        for r in results:
+            date_str = (
+                r["date"].isoformat() if r.get("date") else
+                f"{r['year']}-{r['month']:02d}-{r['day']:02d}"
+            )
+            iid = self.month_tree.insert(
+                "", "end",
+                values=(
+                    date_str, r["location"],
+                    fmt(r["density"]), fmt(r["mg"]), fmt(r["ca"]),
+                    fmt(r["k"]), fmt(r["na"]), r["file"],
+                ),
+            )
+            self._month_row_records[iid] = r
+
+        if not results:
+            self.status_var.set(
+                f"No records for '{name}' in {month:02d}/{year}."
+            )
+        else:
+            self.status_var.set(
+                f"Found {len(results)} record(s) for '{name}' in {month:02d}/{year}."
+            )
+
+    def _on_month_row_double_click(self, event):
+        iid = self.month_tree.identify_row(event.y)
+        if not iid:
+            return
+        record = self._month_row_records.get(iid)
+        if record is None:
+            return
+        filepath = record.get("filepath")
+        sheet = record.get("sheet")
+        if not filepath:
+            return
+        opened_at_sheet = self._open_excel_at_sheet(filepath, sheet)
+        if opened_at_sheet:
+            self.status_var.set(f"Opened {Path(filepath).name} → sheet '{sheet}'.")
+        else:
+            self.status_var.set(
+                f"Opened {Path(filepath).name}. Switch to sheet '{sheet}' manually."
+            )
+
     def _uppercase_name(self, *_):
         current = self.name_var.get()
         upper = current.upper()
@@ -536,6 +690,8 @@ class App(tk.Tk):
         self.search_btn.config(state="disabled")
         self.reload_btn.config(state="disabled")
         self.date_search_btn.config(state="disabled")
+        if hasattr(self, "month_search_btn"):
+            self.month_search_btn.config(state="disabled")
 
         self.status_var.set("Scanning years/ folder...")
         self.progress.config(mode="indeterminate", value=0)
@@ -575,6 +731,8 @@ class App(tk.Tk):
         self.search_btn.config(state="normal")
         self.reload_btn.config(state="normal")
         self.date_search_btn.config(state="normal")
+        if hasattr(self, "month_search_btn"):
+            self.month_search_btn.config(state="normal")
         self.name_entry.focus_set()
         if not YEARS_DIR.is_dir():
             self.status_var.set(
@@ -799,10 +957,14 @@ class App(tk.Tk):
 
         selected.sort(key=lambda r: r["location"].upper())
         for r in selected:
+            date_str = (
+                r["date"].isoformat() if r.get("date") else
+                f"{r['year']}-{r['month']:02d}-{r['day']:02d}"
+            )
             iid = self.sel_tree.insert(
                 "", "end",
                 values=(
-                    r["location"],
+                    r["location"], r["year"], date_str,
                     fmt(r["density"]), fmt(r["mg"]), fmt(r["ca"]),
                     fmt(r["k"]), fmt(r["na"]), r["file"],
                 ),
