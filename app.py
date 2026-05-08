@@ -267,6 +267,9 @@ class App(tk.Tk):
         self._date_row_records = {}
         self.last_date_results = []
         self.last_date_query = None
+        self._delta_win = None
+        self._delta_vars = {}
+        self._delta_widgets = {}
         self._build_ui()
         self.after(50, self.load_data)
 
@@ -484,6 +487,7 @@ class App(tk.Tk):
                 anchor="center" if c != "file" else "w",
             )
         self.sel_tree.bind("<Double-1>", self._on_sel_row_double_click)
+        self.sel_tree.bind("<<TreeviewSelect>>", self._on_delta_selection_changed)
         sel_sb = ttk.Scrollbar(sel_frame, orient="vertical", command=self.sel_tree.yview)
         self.sel_tree.configure(yscrollcommand=sel_sb.set)
         self.sel_tree.pack(side="left", fill="both", expand=True)
@@ -521,6 +525,7 @@ class App(tk.Tk):
             "group", background="#e8eef7", font=("Segoe UI", 9, "bold")
         )
         self.date_tree.bind("<Double-1>", self._on_date_row_double_click)
+        self.date_tree.bind("<<TreeviewSelect>>", self._on_delta_selection_changed)
         sb = ttk.Scrollbar(cmp_frame, orient="vertical", command=self.date_tree.yview)
         self.date_tree.configure(yscrollcommand=sb.set)
         self.date_tree.pack(side="left", fill="both", expand=True)
@@ -1134,7 +1139,15 @@ class App(tk.Tk):
 
         self.status_var.set(f"Exported date comparison to {path}")
 
-    def _show_delta_window(self):
+    _DELTA_FIELDS = (
+        ("Density", "density"),
+        ("Mg+2", "mg"),
+        ("Ca+2", "ca"),
+        ("K+ A.A.", "k"),
+        ("Na+ A.A.", "na"),
+    )
+
+    def _collect_delta_picks(self):
         picks = []
         for iid in self.sel_tree.selection():
             rec = self._sel_row_records.get(iid)
@@ -1146,53 +1159,165 @@ class App(tk.Tk):
                 picks.append(rec)
 
         if len(picks) != 2:
-            messagebox.showinfo(
-                "Select two rows",
-                "Select exactly two rows of the same material to compare.\n\n"
-                "Tip: click a row in the top pane and Ctrl+click another in the "
-                "bottom pane, or Ctrl+click two rows in either pane.",
-            )
-            return
-
+            return None, "Select exactly two rows."
         a, b = picks
         if a["location"].upper() != b["location"].upper():
-            messagebox.showwarning(
-                "Different materials",
-                f"Selected rows have different materials:\n"
-                f"  '{a['location']}' vs '{b['location']}'.\n\n"
-                f"Pick two rows of the same material.",
+            return None, (
+                f"Different materials: '{a['location']}' vs '{b['location']}'."
             )
-            return
-
         a_key = (a.get("date"), a.get("file"), a.get("density"))
         b_key = (b.get("date"), b.get("file"), b.get("density"))
         if a_key == b_key:
-            messagebox.showinfo(
-                "Same record",
-                "The two selected rows appear to be the same record.",
-            )
-            return
+            return None, "Same record selected twice."
 
         a_sort = (a.get("year") or 0, a.get("month") or 0, a.get("day") or 0)
         b_sort = (b.get("year") or 0, b.get("month") or 0, b.get("day") or 0)
         if a_sort > b_sort:
             a, b = b, a
+        return (a, b), None
 
+    def _show_delta_window(self):
+        pair, err = self._collect_delta_picks()
+        if pair is None:
+            messagebox.showinfo(
+                "Select two rows",
+                f"{err}\n\n"
+                "Click a row in the top pane and Ctrl+click another in the "
+                "bottom pane, or Ctrl+click two rows in either pane.",
+            )
+            return
+        a, b = pair
+        if self._delta_win is not None and self._delta_win.winfo_exists():
+            self._update_delta_window(a, b)
+            try:
+                self._delta_win.lift()
+            except tk.TclError:
+                pass
+            return
         self._open_delta_window(a, b)
+
+    def _on_delta_selection_changed(self, _event=None):
+        if self._delta_win is None or not self._delta_win.winfo_exists():
+            return
+        pair, _err = self._collect_delta_picks()
+        if pair is None:
+            self._set_delta_hint(_err or "Select two rows of the same material.")
+            return
+        self._update_delta_window(*pair)
 
     def _open_delta_window(self, a, b):
         win = tk.Toplevel(self)
+        self._delta_win = win
         win.title(f"Δ {a['location']}")
         win.transient(self)
         try:
             win.attributes("-topmost", True)
         except tk.TclError:
             pass
-        win.geometry("560x360")
+        win.geometry("560x380")
         win.resizable(False, False)
 
         frm = ttk.Frame(win, padding=12)
         frm.pack(fill="both", expand=True)
+
+        v = {
+            "title": tk.StringVar(),
+            "hint": tk.StringVar(),
+            "a_date": tk.StringVar(),
+            "b_date": tk.StringVar(),
+            "a_file": tk.StringVar(),
+            "b_file": tk.StringVar(),
+        }
+        for _label, key in self._DELTA_FIELDS:
+            v[f"a_{key}"] = tk.StringVar()
+            v[f"b_{key}"] = tk.StringVar()
+            v[f"d_{key}"] = tk.StringVar()
+        self._delta_vars = v
+        self._delta_widgets = {}
+
+        ttk.Label(
+            frm, textvariable=v["title"], font=("Segoe UI", 12, "bold"),
+        ).grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 4))
+        ttk.Label(
+            frm, textvariable=v["hint"], font=("Segoe UI", 9, "italic"),
+            foreground="#888",
+        ).grid(row=0, column=0, columnspan=4, sticky="e", pady=(0, 4))
+
+        for c, h in enumerate(("", "A (earlier)", "B (later)", "Δ (B − A)")):
+            ttk.Label(
+                frm, text=h, font=("Segoe UI", 9, "bold"), foreground="#444",
+            ).grid(row=1, column=c, sticky="w", padx=8, pady=(6, 4))
+
+        ttk.Label(frm, text="Date").grid(row=2, column=0, sticky="w", padx=8, pady=2)
+        ttk.Label(frm, textvariable=v["a_date"]).grid(row=2, column=1, sticky="w", padx=8)
+        ttk.Label(frm, textvariable=v["b_date"]).grid(row=2, column=2, sticky="w", padx=8)
+
+        ttk.Label(frm, text="File").grid(row=3, column=0, sticky="nw", padx=8, pady=2)
+        ttk.Label(
+            frm, textvariable=v["a_file"], font=("Segoe UI", 8),
+            foreground="#555", wraplength=160, justify="left",
+        ).grid(row=3, column=1, sticky="w", padx=8)
+        ttk.Label(
+            frm, textvariable=v["b_file"], font=("Segoe UI", 8),
+            foreground="#555", wraplength=160, justify="left",
+        ).grid(row=3, column=2, sticky="w", padx=8)
+
+        ttk.Separator(frm, orient="horizontal").grid(
+            row=4, column=0, columnspan=4, sticky="ew", pady=10
+        )
+
+        for i, (label, key) in enumerate(self._DELTA_FIELDS):
+            r = 5 + i
+            ttk.Label(frm, text=label, font=("Segoe UI", 10)).grid(
+                row=r, column=0, sticky="w", padx=8, pady=3
+            )
+            ttk.Label(
+                frm, textvariable=v[f"a_{key}"], font=("Consolas", 10),
+            ).grid(row=r, column=1, sticky="w", padx=8)
+            ttk.Label(
+                frm, textvariable=v[f"b_{key}"], font=("Consolas", 10),
+            ).grid(row=r, column=2, sticky="w", padx=8)
+            d_lbl = tk.Label(
+                frm, textvariable=v[f"d_{key}"],
+                font=("Consolas", 10, "bold"),
+            )
+            d_lbl.grid(row=r, column=3, sticky="w", padx=8)
+            self._delta_widgets[f"d_{key}"] = d_lbl
+
+        btm = ttk.Frame(frm)
+        btm.grid(row=99, column=0, columnspan=4, sticky="e", pady=(14, 0))
+        ttk.Button(btm, text="Close", command=win.destroy).pack(side="right")
+
+        def _on_close():
+            self._delta_win = None
+            self._delta_vars = {}
+            self._delta_widgets = {}
+            win.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", _on_close)
+        win.bind("<Escape>", lambda _e: _on_close())
+        win.focus_set()
+
+        self._update_delta_window(a, b)
+
+    def _set_delta_hint(self, text):
+        if not self._delta_vars:
+            return
+        var = self._delta_vars.get("hint")
+        if var is not None:
+            var.set(text)
+
+    def _update_delta_window(self, a, b):
+        if self._delta_win is None or not self._delta_win.winfo_exists():
+            return
+        v = self._delta_vars
+        if not v:
+            return
+
+        try:
+            self._delta_win.title(f"Δ {a['location']}")
+        except tk.TclError:
+            pass
 
         def fmt_date(r):
             return (
@@ -1200,59 +1325,20 @@ class App(tk.Tk):
                 f"{r['year']}-{r['month']:02d}-{r['day']:02d}"
             )
 
-        def fmt_val(v):
-            return f"{v:.4f}" if isinstance(v, (int, float)) else "—"
+        def fmt_val(val):
+            return f"{val:.4f}" if isinstance(val, (int, float)) else "—"
 
-        ttk.Label(
-            frm, text=f"Material: {a['location']}",
-            font=("Segoe UI", 12, "bold"),
-        ).grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 10))
+        v["title"].set(f"Material: {a['location']}")
+        v["hint"].set("live — change selection to update")
+        v["a_date"].set(fmt_date(a))
+        v["b_date"].set(fmt_date(b))
+        v["a_file"].set(a["file"])
+        v["b_file"].set(b["file"])
 
-        for c, h in enumerate(("", "A (earlier)", "B (later)", "Δ (B − A)")):
-            ttk.Label(
-                frm, text=h, font=("Segoe UI", 9, "bold"),
-                foreground="#444",
-            ).grid(row=1, column=c, sticky="w", padx=8, pady=(0, 4))
-
-        ttk.Label(frm, text="Date").grid(row=2, column=0, sticky="w", padx=8, pady=2)
-        ttk.Label(frm, text=fmt_date(a)).grid(row=2, column=1, sticky="w", padx=8)
-        ttk.Label(frm, text=fmt_date(b)).grid(row=2, column=2, sticky="w", padx=8)
-
-        ttk.Label(frm, text="File").grid(row=3, column=0, sticky="nw", padx=8, pady=2)
-        ttk.Label(
-            frm, text=a["file"], font=("Segoe UI", 8), foreground="#555",
-            wraplength=160, justify="left",
-        ).grid(row=3, column=1, sticky="w", padx=8)
-        ttk.Label(
-            frm, text=b["file"], font=("Segoe UI", 8), foreground="#555",
-            wraplength=160, justify="left",
-        ).grid(row=3, column=2, sticky="w", padx=8)
-
-        ttk.Separator(frm, orient="horizontal").grid(
-            row=4, column=0, columnspan=4, sticky="ew", pady=10
-        )
-
-        fields = [
-            ("Density", "density"),
-            ("Mg+2", "mg"),
-            ("Ca+2", "ca"),
-            ("K+ A.A.", "k"),
-            ("Na+ A.A.", "na"),
-        ]
-
-        for i, (label, key) in enumerate(fields):
-            r = 5 + i
-            ttk.Label(frm, text=label, font=("Segoe UI", 10)).grid(
-                row=r, column=0, sticky="w", padx=8, pady=3
-            )
-            ttk.Label(
-                frm, text=fmt_val(a[key]), font=("Consolas", 10),
-            ).grid(row=r, column=1, sticky="w", padx=8)
-            ttk.Label(
-                frm, text=fmt_val(b[key]), font=("Consolas", 10),
-            ).grid(row=r, column=2, sticky="w", padx=8)
-
+        for _label, key in self._DELTA_FIELDS:
             va, vb = a[key], b[key]
+            v[f"a_{key}"].set(fmt_val(va))
+            v[f"b_{key}"].set(fmt_val(vb))
             if isinstance(va, (int, float)) and isinstance(vb, (int, float)):
                 d = vb - va
                 sign = "+" if d > 0 else ("" if d < 0 else " ")
@@ -1266,17 +1352,13 @@ class App(tk.Tk):
             else:
                 txt = "—"
                 color = "#888"
-            ttk.Label(
-                frm, text=txt, font=("Consolas", 10, "bold"),
-                foreground=color,
-            ).grid(row=r, column=3, sticky="w", padx=8)
-
-        btm = ttk.Frame(frm)
-        btm.grid(row=99, column=0, columnspan=4, sticky="e", pady=(14, 0))
-        ttk.Button(btm, text="Close", command=win.destroy).pack(side="right")
-
-        win.bind("<Escape>", lambda _e: win.destroy())
-        win.focus_set()
+            v[f"d_{key}"].set(txt)
+            lbl = self._delta_widgets.get(f"d_{key}")
+            if lbl is not None:
+                try:
+                    lbl.config(foreground=color)
+                except tk.TclError:
+                    pass
 
     def _on_sel_row_double_click(self, event):
         iid = self.sel_tree.identify_row(event.y)
