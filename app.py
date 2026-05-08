@@ -432,11 +432,15 @@ class App(tk.Tk):
 
         self.date_search_btn = ttk.Button(top, text="Compare", command=self.date_search)
         self.date_search_btn.grid(row=0, column=8, padx=8)
+        self.delta_btn = ttk.Button(
+            top, text="Show Δ", command=self._show_delta_window
+        )
+        self.delta_btn.grid(row=0, column=9, padx=4)
         self.date_export_btn = ttk.Button(
             top, text="Export to Excel",
             command=self.export_date_results, state="disabled",
         )
-        self.date_export_btn.grid(row=0, column=9, padx=4)
+        self.date_export_btn.grid(row=0, column=10, padx=4)
 
         ttk.Label(
             top,
@@ -447,7 +451,7 @@ class App(tk.Tk):
             foreground="#555",
             wraplength=1000,
             justify="left",
-        ).grid(row=1, column=0, columnspan=10, sticky="w", padx=4, pady=(4, 0))
+        ).grid(row=1, column=0, columnspan=11, sticky="w", padx=4, pady=(4, 0))
 
         body = ttk.PanedWindow(parent, orient="vertical")
         body.pack(fill="both", expand=True, padx=10, pady=10)
@@ -1129,6 +1133,150 @@ class App(tk.Tk):
             wb.close()
 
         self.status_var.set(f"Exported date comparison to {path}")
+
+    def _show_delta_window(self):
+        picks = []
+        for iid in self.sel_tree.selection():
+            rec = self._sel_row_records.get(iid)
+            if rec is not None:
+                picks.append(rec)
+        for iid in self.date_tree.selection():
+            rec = self._date_row_records.get(iid)
+            if rec is not None:
+                picks.append(rec)
+
+        if len(picks) != 2:
+            messagebox.showinfo(
+                "Select two rows",
+                "Select exactly two rows of the same material to compare.\n\n"
+                "Tip: click a row in the top pane and Ctrl+click another in the "
+                "bottom pane, or Ctrl+click two rows in either pane.",
+            )
+            return
+
+        a, b = picks
+        if a["location"].upper() != b["location"].upper():
+            messagebox.showwarning(
+                "Different materials",
+                f"Selected rows have different materials:\n"
+                f"  '{a['location']}' vs '{b['location']}'.\n\n"
+                f"Pick two rows of the same material.",
+            )
+            return
+
+        a_key = (a.get("date"), a.get("file"), a.get("density"))
+        b_key = (b.get("date"), b.get("file"), b.get("density"))
+        if a_key == b_key:
+            messagebox.showinfo(
+                "Same record",
+                "The two selected rows appear to be the same record.",
+            )
+            return
+
+        a_sort = (a.get("year") or 0, a.get("month") or 0, a.get("day") or 0)
+        b_sort = (b.get("year") or 0, b.get("month") or 0, b.get("day") or 0)
+        if a_sort > b_sort:
+            a, b = b, a
+
+        self._open_delta_window(a, b)
+
+    def _open_delta_window(self, a, b):
+        win = tk.Toplevel(self)
+        win.title(f"Δ {a['location']}")
+        win.transient(self)
+        try:
+            win.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        win.geometry("560x360")
+        win.resizable(False, False)
+
+        frm = ttk.Frame(win, padding=12)
+        frm.pack(fill="both", expand=True)
+
+        def fmt_date(r):
+            return (
+                r["date"].isoformat() if r.get("date") else
+                f"{r['year']}-{r['month']:02d}-{r['day']:02d}"
+            )
+
+        def fmt_val(v):
+            return f"{v:.4f}" if isinstance(v, (int, float)) else "—"
+
+        ttk.Label(
+            frm, text=f"Material: {a['location']}",
+            font=("Segoe UI", 12, "bold"),
+        ).grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 10))
+
+        for c, h in enumerate(("", "A (earlier)", "B (later)", "Δ (B − A)")):
+            ttk.Label(
+                frm, text=h, font=("Segoe UI", 9, "bold"),
+                foreground="#444",
+            ).grid(row=1, column=c, sticky="w", padx=8, pady=(0, 4))
+
+        ttk.Label(frm, text="Date").grid(row=2, column=0, sticky="w", padx=8, pady=2)
+        ttk.Label(frm, text=fmt_date(a)).grid(row=2, column=1, sticky="w", padx=8)
+        ttk.Label(frm, text=fmt_date(b)).grid(row=2, column=2, sticky="w", padx=8)
+
+        ttk.Label(frm, text="File").grid(row=3, column=0, sticky="nw", padx=8, pady=2)
+        ttk.Label(
+            frm, text=a["file"], font=("Segoe UI", 8), foreground="#555",
+            wraplength=160, justify="left",
+        ).grid(row=3, column=1, sticky="w", padx=8)
+        ttk.Label(
+            frm, text=b["file"], font=("Segoe UI", 8), foreground="#555",
+            wraplength=160, justify="left",
+        ).grid(row=3, column=2, sticky="w", padx=8)
+
+        ttk.Separator(frm, orient="horizontal").grid(
+            row=4, column=0, columnspan=4, sticky="ew", pady=10
+        )
+
+        fields = [
+            ("Density", "density"),
+            ("Mg+2", "mg"),
+            ("Ca+2", "ca"),
+            ("K+ A.A.", "k"),
+            ("Na+ A.A.", "na"),
+        ]
+
+        for i, (label, key) in enumerate(fields):
+            r = 5 + i
+            ttk.Label(frm, text=label, font=("Segoe UI", 10)).grid(
+                row=r, column=0, sticky="w", padx=8, pady=3
+            )
+            ttk.Label(
+                frm, text=fmt_val(a[key]), font=("Consolas", 10),
+            ).grid(row=r, column=1, sticky="w", padx=8)
+            ttk.Label(
+                frm, text=fmt_val(b[key]), font=("Consolas", 10),
+            ).grid(row=r, column=2, sticky="w", padx=8)
+
+            va, vb = a[key], b[key]
+            if isinstance(va, (int, float)) and isinstance(vb, (int, float)):
+                d = vb - va
+                sign = "+" if d > 0 else ("" if d < 0 else " ")
+                txt = f"{sign}{d:.4f}"
+                if d > 0:
+                    color = "#0a7d2c"
+                elif d < 0:
+                    color = "#b03030"
+                else:
+                    color = "#444"
+            else:
+                txt = "—"
+                color = "#888"
+            ttk.Label(
+                frm, text=txt, font=("Consolas", 10, "bold"),
+                foreground=color,
+            ).grid(row=r, column=3, sticky="w", padx=8)
+
+        btm = ttk.Frame(frm)
+        btm.grid(row=99, column=0, columnspan=4, sticky="e", pady=(14, 0))
+        ttk.Button(btm, text="Close", command=win.destroy).pack(side="right")
+
+        win.bind("<Escape>", lambda _e: win.destroy())
+        win.focus_set()
 
     def _on_sel_row_double_click(self, event):
         iid = self.sel_tree.identify_row(event.y)
